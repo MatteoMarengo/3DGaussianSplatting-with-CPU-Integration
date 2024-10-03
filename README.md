@@ -1,3 +1,115 @@
+----
+
+## Context 
+
+- <b> Internship within VALEO.ai and INRIA - Astra Vision </b>
+- <b> Student: Matteo MARENGO </b>
+- <b> Supervised by: Dr. Alexandre BOULCH, Dr. Raoul DE CHARETTE, Pr. Renaud MARLET </b>
+
+----
+
+## This Script is to use 3DGS with images loaded onto the CPU during the training
+
+### What is the objective
+- The goal of that repository is to use 3DGS Vanilla Pipeline but where images are loaded onto the CPU. Indeed, a large amount of GPU memory is needed especially when dealing with large sized images. 
+- This issue is also nice to look at : https://github.com/graphdeco-inria/gaussian-splatting/issues/723
+
+### How to do it 
+- It has been observed that camera infos and images are loaded onto the GPU.
+- In scene/dataset_readers.py the class CameraInfo has to be modified:
+```python
+class CameraInfo(NamedTuple):
+    uid: int
+    R: np.array
+    T: np.array
+    FovY: np.array
+    FovX: np.array
+    # image: np.array
+    image_path: str
+    image_name: str
+    width: int
+    height: int
+```
+- In readCamerasFromTransformsCPU we only load and keep image_path and image_name, it therefore requires that size of the image is to be known and adapted as it can not be retrieved from the image.
+```python
+####### LOAD THE IMAGE PART #######
+image_path = os.path.join(path, cam_name)
+image_name = Path(cam_name).stem
+# image = Image.open(image_path)
+
+# im_data = np.array(image.convert("RGBA"))
+
+# bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
+
+# norm_data = im_data / 255.0
+# arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
+# image = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
+
+size0 = 1600
+size1 = 900
+```
+- In scene/cameras.py there is also modifications to do.
+- Here is the original lines from class Camera
+``` python
+self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+self.image_width = self.original_image.shape[2]
+self.image_height = self.original_image.shape[1]
+
+if gt_alpha_mask is not None:
+    self.original_image *= gt_alpha_mask.to(self.data_device)
+else:
+    self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
+```
+- Now here is the modified version
+```python
+  # self.original_image = image.clamp(0.0, 1.0).to(self.data_device)
+  self.image_width = 1600
+  self.image_height = 900
+
+  # if gt_alpha_mask is not None:
+  #     self.original_image *= gt_alpha_mask.to(self.data_device)
+  # else:
+  #     self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device)
+```
+- Therefore the loading of the images is going to be done in the training loop by loading the image each time it goes through the script.
+- So once the image has been rendered here is the addition to load the gt_image
+```python
+####### LOAD THE IMAGE PART #######
+gimage = Image.open(viewpoint_cam.image_path)
+
+im_data = np.array(gimage.convert("RGBA"))
+
+bga = np.array([1, 1, 1]) # if white_background else np.array([0, 0, 0])
+
+norm_data = im_data / 255.0
+arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + bga * (1 - norm_data[:, :, 3:4])
+gimage = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
+
+########################################
+resized_image_rgb = PILtoTorch(gimage, viewpoint_cam.resolution)
+gimage = resized_image_rgb[:3, ...]
+loaded_mask = None
+
+if resized_image_rgb.shape[1] == 4:
+    loaded_mask = resized_image_rgb[3:4, ...]
+
+original_image = gimage.clamp(0.0, 1.0).to("cuda")
+image_width = original_image.shape[2]
+image_height = original_image.shape[1]
+
+if loaded_mask is not None:
+    original_image *= loaded_mask.to("cuda")
+else:
+    original_image *= torch.ones((1, image_height, image_width), device="cuda")
+
+gt_image = original_image
+```
+- This has also to be done in the training_report function.
+- Similarly, this update has to be done in render.py function.
+
+### Results
+- Many trainings were done using this method, it works nicely then on small GPUs (12 GB) even if it is way slower than the original method.
+----
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
 Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
 | [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>
